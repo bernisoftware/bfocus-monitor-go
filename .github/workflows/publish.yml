@@ -98,7 +98,9 @@ jobs:
           mkdir -p /tmp/verify && cd /tmp/verify
           go mod init verify.local/bfmonitor
           go get "github.com/bernisoftware/bfocus-monitor-go@${GITHUB_REF_NAME}"
-          go test -count=1 github.com/bernisoftware/bfocus-monitor-go
+          # Só a conformidade: no cache de módulos tudo fica sob /pkg/mod/, e a heurística (certa)
+          # trata os arquivos de teste do próprio pacote como biblioteca.
+          go test -count=1 -run '^TestConformance' github.com/bernisoftware/bfocus-monitor-go
           cat > main.go <<'EOF'
           package main
 

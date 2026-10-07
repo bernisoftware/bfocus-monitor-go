@@ -11,7 +11,7 @@ seu programa.
 ## Instalação
 
 ```bash
-go get github.com/bernisoftware/bfocus-monitor-go@v0.1.0
+go get github.com/bernisoftware/bfocus-monitor-go@v0.1.1
 ```
 
 ## Ligar
@@ -57,13 +57,18 @@ ainda não traz a interna.
 ## Echo, chi, gin
 
 - **chi** e qualquer roteador `net/http`: `r.Use(bfmonitor.Middleware)` ou embrulhe o roteador.
-- **Echo v4**: sem dependência nova, pelo adaptador do próprio Echo, **depois** do
-  `middleware.Recover()` (o Recover do Echo fica de fora e não chega a ver o panic):
+- **Echo v4** (e qualquer framework que já tenha recover próprio — gin, o Recoverer do chi):
+  use `MiddlewareRepanic`, **depois** do recover do framework. Ele registra o panic com a
+  requisição e a identidade e o repassa: o Recover do Echo responde (o JSON de sempre) e loga o
+  rastro como antes do monitor.
 
   ```go
   e.Use(middleware.Recover())
-  e.Use(echo.WrapMiddleware(bfmonitor.Middleware))
+  e.Use(echo.WrapMiddleware(bfmonitor.MiddlewareRepanic))
   ```
+
+  (`bfmonitor.Middleware` engole o panic e responde 500 em texto — é para `net/http` puro, sem
+  recover por fora.)
 
   Erro **devolvido** pelo handler (sem panic) não passa pelo Middleware; mande os 5xx no
   `HTTPErrorHandler`:

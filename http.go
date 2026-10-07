@@ -149,6 +149,20 @@ func capturePanic(v any, sc *scope, level Level) {
 //
 // Echo: e.Use(echo.WrapMiddleware(bfmonitor.Middleware)) DEPOIS do middleware.Recover().
 func Middleware(next http.Handler) http.Handler {
+	return middleware(next, false)
+}
+
+// MiddlewareRepanic é o Middleware para quem JÁ tem um recover por fora (o middleware.Recover()
+// do Echo, o Recoverer do chi, o do gin): registra o panic com a requisição e a identidade e
+// o REPASSA — quem está por fora responde e loga exatamente como antes do monitor.
+//
+//	e.Use(middleware.Recover())
+//	e.Use(echo.WrapMiddleware(bfmonitor.MiddlewareRepanic))
+func MiddlewareRepanic(next http.Handler) http.Handler {
+	return middleware(next, true)
+}
+
+func middleware(next http.Handler, repanic bool) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		sc := &scope{url: requestURL(r)}
 		if existing := scopeFrom(r.Context()); existing != nil {
@@ -168,6 +182,9 @@ func Middleware(next http.Handler) http.Handler {
 				panic(v) // convenção do net/http: abortar sem registrar
 			}
 			capturePanic(v, sc, LevelError)
+			if repanic {
+				panic(v)
+			}
 			if !rw.wrote {
 				func() {
 					defer swallow()

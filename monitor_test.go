@@ -530,3 +530,56 @@ func TestHeartbeat401Disables(t *testing.T) {
 		t.Fatal("desligado não envia eventos")
 	}
 }
+
+// Binário com -trimpath: biblioteca aparece como "módulo@versão/arquivo" (sem /pkg/mod/).
+func TestTrimpathLibraryIsNotInApp(t *testing.T) {
+	fr := bfmonitor.FramesForTest(nil, []bfmonitor.RawFrameForTest{
+		{Function: "github.com/acme/loja/apps/api/internal/server.(*S).pedido", File: "github.com/acme/loja/apps/api/internal/server/pedido.go", Line: 10},
+		{Function: "github.com/labstack/echo/v4.(*Echo).ServeHTTP", File: "github.com/labstack/echo/v4@v4.15.4/echo.go", Line: 663},
+	})
+	byFn := map[string]bool{}
+	for _, f := range fr {
+		byFn[f.Function] = f.InApp
+	}
+	if byFn["github.com/labstack/echo/v4.(*Echo).ServeHTTP"] {
+		t.Error("frame do echo (módulo@versão) marcado como código do sistema")
+	}
+	if !byFn["github.com/acme/loja/apps/api/internal/server.(*S).pedido"] {
+		t.Error("frame do sistema não marcado como inApp")
+	}
+}
+
+// Quem já tem recover por fora (Echo, chi, gin): o panic é registrado e REPASSADO.
+func TestMiddlewareRepanicHandsThePanicToTheOuterRecover(t *testing.T) {
+	srv := setup(t, bfmonitor.Options{})
+	var outer any
+	h := func(w http.ResponseWriter, r *http.Request) {
+		defer func() {
+			if v := recover(); v != nil {
+				outer = v
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(500)
+				_, _ = w.Write([]byte(`{"message":"Internal Server Error"}`))
+			}
+		}()
+		bfmonitor.MiddlewareRepanic(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+			panic("quebrou")
+		})).ServeHTTP(w, r)
+	}
+	app := httptest.NewServer(http.HandlerFunc(h))
+	defer app.Close()
+	resp, err := http.Get(app.URL + "/x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if outer != "quebrou" {
+		t.Fatalf("o recover de fora não recebeu o panic: %v", outer)
+	}
+	if resp.Header.Get("Content-Type") != "application/json" {
+		t.Errorf("a resposta devia ser a do recover de fora, veio %q", resp.Header.Get("Content-Type"))
+	}
+	if ev := onlyEvent(t, srv); ev["exception"].(map[string]any)["message"] != "quebrou" {
+		t.Errorf("evento = %v", ev["exception"])
+	}
+}

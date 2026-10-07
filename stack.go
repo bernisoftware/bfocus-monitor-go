@@ -3,6 +3,7 @@ package bfmonitor
 import (
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"runtime/debug"
 	"strings"
@@ -84,6 +85,9 @@ func loadEnv() {
 	})
 }
 
+// "@v1.2.3" num caminho = arquivo de um módulo de terceiros (formato do -trimpath).
+var moduleVersionRe = regexp.MustCompile(`@v\d+\.\d+\.\d+`)
+
 // classifier decide o inApp de cada frame.
 type classifier struct {
 	inAppPrefixes []string
@@ -99,7 +103,9 @@ func (c classifier) inApp(f rawFrame) bool {
 			return true
 		}
 	}
-	if strings.Contains(file, "/pkg/mod/") || strings.Contains(file, "/vendor/") {
+	// Biblioteca: no cache de módulos (/pkg/mod/), vendorizada, ou — binário compilado com
+	// -trimpath — com a versão do módulo no caminho ("github.com/labstack/echo/v4@v4.15.4/echo.go").
+	if strings.Contains(file, "/pkg/mod/") || strings.Contains(file, "/vendor/") || moduleVersionRe.MatchString(file) {
 		return false
 	}
 	if gorootSrc != "" && strings.HasPrefix(file, gorootSrc) {
