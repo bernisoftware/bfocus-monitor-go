@@ -557,12 +557,16 @@ func TestMiddlewareRepanicHandsThePanicToTheOuterRecover(t *testing.T) {
 		defer func() {
 			if v := recover(); v != nil {
 				outer = v
+				// O recover do framework entrega o panic ao handler de erros, que manda os 5xx:
+				// o mesmo problema NÃO pode ir duas vezes.
+				bfmonitor.CaptureErrorCtx(r.Context(), fmt.Errorf("%v", v))
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(500)
 				_, _ = w.Write([]byte(`{"message":"Internal Server Error"}`))
 			}
 		}()
-		bfmonitor.MiddlewareRepanic(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		bfmonitor.MiddlewareRepanic(http.HandlerFunc(func(_ http.ResponseWriter, inner *http.Request) {
+			r = inner // como o Echo: o contexto passa a carregar a requisição do middleware
 			panic("quebrou")
 		})).ServeHTTP(w, r)
 	}

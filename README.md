@@ -11,7 +11,7 @@ seu programa.
 ## Instalação
 
 ```bash
-go get github.com/bernisoftware/bfocus-monitor-go@v0.1.1
+go get github.com/bernisoftware/bfocus-monitor-go@v0.1.2
 ```
 
 ## Ligar

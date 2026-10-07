@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -19,6 +20,10 @@ type scope struct {
 	transaction string
 	url         string
 	req         *http.Request // a requisição que o roteador recebeu (padrão da rota)
+	// panicked: o panic que o MiddlewareRepanic já registrou nesta requisição. O recover do
+	// framework (Echo, gin) costuma transformá-lo em erro e entregá-lo ao handler de erros —
+	// que, se chamar CaptureErrorCtx, mandaria o mesmo problema duas vezes.
+	panicked any
 }
 
 type scopeKey struct{}
@@ -107,7 +112,25 @@ func CaptureErrorCtx(ctx context.Context, err error, opts ...CaptureOption) {
 	if c == nil {
 		return
 	}
-	c.capture(describeError(err), trimOwn(callers(1)), scopeFrom(ctx), opts)
+	sc := scopeFrom(ctx)
+	if sc != nil && samePanic(sc, err) {
+		return
+	}
+	c.capture(describeError(err), trimOwn(callers(1)), sc, opts)
+}
+
+// samePanic: o erro é o panic que esta requisição já mandou (ele mesmo, ou o texto dele).
+func samePanic(sc *scope, err error) bool {
+	sc.mu.Lock()
+	v := sc.panicked
+	sc.mu.Unlock()
+	if v == nil {
+		return false
+	}
+	if pe, ok := v.(error); ok && (errors.Is(err, pe) || err.Error() == pe.Error()) {
+		return true
+	}
+	return err.Error() == fmt.Sprint(v)
 }
 
 // Recover, com defer no topo do main ou de uma goroutine, captura o panic (nível fatal),
@@ -183,6 +206,9 @@ func middleware(next http.Handler, repanic bool) http.Handler {
 			}
 			capturePanic(v, sc, LevelError)
 			if repanic {
+				sc.mu.Lock()
+				sc.panicked = v
+				sc.mu.Unlock()
 				panic(v)
 			}
 			if !rw.wrote {
