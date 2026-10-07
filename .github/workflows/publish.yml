@@ -1,0 +1,126 @@
+# Valida e publica o módulo github.com/bernisoftware/bfocus-monitor-go (package bfmonitor) ao receber uma
+# tag vX.Y.Z no espelho público bernisoftware/bfocus-monitor-go (o scripts/release-monitor.sh do monorepo
+# espelha monitor/go e cria a tag).
+#
+# Em Go não há registro para onde subir: a versão publicada É a tag, e o `go get` resolve pelo
+# proxy.golang.org — que guarda PARA SEMPRE a primeira cópia que buscar de uma tag. Por isso nenhum
+# passo deste workflow toca o proxy antes da suíte verde no piso (Go 1.21, o `go` do go.mod) e na
+# versão estável, e da tag bater com a constante Version. Tag errada? Apague-a no espelho ANTES de
+# alguém buscá-la e rode o release de novo.
+#
+# O teste que compara com o monorepo (monitor/release.json) pula sozinho aqui. Não usa segredo nenhum.
+name: publish
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        go: ['1.21', 'stable']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+          cache: false # sem dependências: não há go.sum para chavear o cache
+      - run: go version
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          [ -z "$unformatted" ] || { echo "::error::rode gofmt -w em: $unformatted"; exit 1; }
+      - run: go vet ./...
+      # Conformidade (testdata/cases.json) + unitários + middleware + versão. Sem rede externa: a
+      # suíte sobe um servidor httptest local. No 1.21 compila pattern_old.go (sem r.Pattern); no
+      # stable, pattern_go123.go.
+      - run: go test -race -count=1 -v ./...
+
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # A tag é a versão publicada; Version vai no X-bFocus-Client e em sdk.version de todo evento. O
+      # bump e a tag são passos separados no release-monitor.sh: se divergirem, quem instalar vX.Y.Z
+      # se identificaria ao bFocus com outro número.
+      - name: A tag bate com Version (version.go)
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          code="$(sed -nE 's/^const Version = "([^"]+)"$/\1/p' version.go)"
+          [ -n "$code" ] || { echo "::error::não achei 'const Version = \"...\"' em version.go"; exit 1; }
+          [ "$tag" = "$code" ] || { echo "::error::tag $GITHUB_REF_NAME != Version $code"; exit 1; }
+          echo "versão $code confirmada"
+      - name: go.mod declara o módulo e o piso
+        run: |
+          grep -qx 'module github.com/bernisoftware/bfocus-monitor-go' go.mod || { echo "::error::module errado no go.mod"; exit 1; }
+          grep -qx 'go 1.21' go.mod || { echo "::error::go.mod precisa de 'go 1.21'"; exit 1; }
+
+  publish:
+    needs: [test, version] # sem suíte verde e tag conferida, o proxy não vê a tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+          cache: false
+
+      # Faz o proxy.golang.org buscar a tag agora (e o pkg.go.dev indexar em seguida), em vez de
+      # esperar o primeiro `go get` de um usuário.
+      - name: Aquecer o proxy.golang.org
+        env:
+          GOPROXY: https://proxy.golang.org
+        run: |
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if go list -m -json "github.com/bernisoftware/bfocus-monitor-go@${GITHUB_REF_NAME}"; then
+              exit 0
+            fi
+            echo "proxy ainda não viu ${GITHUB_REF_NAME} (tentativa $attempt) — esperando"
+            sleep 15
+          done
+          echo "::error::proxy.golang.org não serviu ${GITHUB_REF_NAME}"
+          exit 1
+
+      # A suíte roda de novo, agora contra o módulo como o usuário recebe (zip do proxy, conferido no
+      # sum.golang.org) — pega arquivo que ficou fora do espelho, testdata ausente ou Version diferente
+      # da tag.
+      - name: Suíte contra o módulo servido pelo proxy
+        env:
+          GOPROXY: https://proxy.golang.org
+          GOFLAGS: -mod=mod
+        run: |
+          mkdir -p /tmp/verify && cd /tmp/verify
+          go mod init verify.local/bfmonitor
+          go get "github.com/bernisoftware/bfocus-monitor-go@${GITHUB_REF_NAME}"
+          go test -count=1 github.com/bernisoftware/bfocus-monitor-go
+          cat > main.go <<'EOF'
+          package main
+
+          import (
+          	"fmt"
+          	"net/http"
+          	"os"
+
+          	bfmonitor "github.com/bernisoftware/bfocus-monitor-go"
+          )
+
+          func main() {
+          	if want := os.Args[1]; "v"+bfmonitor.Version != want {
+          		fmt.Fprintf(os.Stderr, "Version %s no módulo publicado, tag %s\n", bfmonitor.Version, want)
+          		os.Exit(1)
+          	}
+          	if err := bfmonitor.Init(bfmonitor.Options{}); err == nil {
+          		fmt.Fprintln(os.Stderr, "Init aceitou chave vazia")
+          		os.Exit(1)
+          	}
+          	_ = bfmonitor.Middleware(http.NewServeMux())
+          	fmt.Println("módulo publicado ok:", bfmonitor.Version)
+          }
+          EOF
+          go run . "${GITHUB_REF_NAME}"
